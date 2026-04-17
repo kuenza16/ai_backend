@@ -1,11 +1,12 @@
 {
   "name": "ai-backend",
   "version": "1.0.0",
-  "description": "",
-  "main": "server.js",
+  "description": "Custom Copilot AI Backend",
   "type": "module",
+  "main": "src/server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js"
   },
   "dependencies": {
     "cors": "^2.8.6",
