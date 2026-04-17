@@ -7,11 +7,11 @@ dotenv.config();
 const app = express();
 
 app.use(cors());
-app.use(express.json({ limit: "1mb" }));
+app.use(express.json({ limit: "2mb" }));
 
-// --------------------
-// GROQ AI CALL
-// --------------------
+// ======================================================
+// 🔥 GROQ CORE AI CALL (NON-STREAM)
+// ======================================================
 async function callAI(prompt) {
   try {
     const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
@@ -26,25 +26,21 @@ async function callAI(prompt) {
           {
             role: "system",
             content: `
-You are a deterministic code engine.
+You are a deterministic code engine (Copilot style).
 
 STRICT RULES:
-- Output ONLY ONE final code solution
-- NO explanations
-- NO markdown
-- NO code fences
-- NO comments unless necessary
-- If multiple solutions exist, choose the best one only
-- Output MUST be raw code only
+- Output ONLY code
+- Do NOT explain anything
+- Do NOT include markdown
+- Do NOT include multiple solutions
+- Modify only what is necessary
+- Keep original structure unless required
             `.trim(),
           },
-          {
-            role: "user",
-            content: prompt,
-          },
+          { role: "user", content: prompt },
         ],
         temperature: 0.0,
-        max_tokens: 600,
+        max_tokens: 800,
       }),
     });
 
@@ -57,13 +53,10 @@ STRICT RULES:
 
     let output = data?.choices?.[0]?.message?.content || "No response";
 
-    // --------------------
-    // CLEAN OUTPUT (FORCED SINGLE CODE)
-    // --------------------
+    // Clean output (remove markdown fences if any)
     output = output
       .replace(/```[a-zA-Z]*\n?/g, "")
       .replace(/```/g, "")
-      .split("\n\n")[0] // forces single solution
       .trim();
 
     return output;
@@ -73,60 +66,119 @@ STRICT RULES:
   }
 }
 
-// --------------------
-// MAIN ROUTE
-// --------------------
+// ======================================================
+// ⚡ STREAMING AI (REAL-TIME OUTPUT)
+// ======================================================
+app.post("/ai-stream", async (req, res) => {
+  try {
+    const { prompt } = req.body;
+
+    res.setHeader("Content-Type", "text/plain");
+    res.setHeader("Transfer-Encoding", "chunked");
+
+    const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "llama-3.1-8b-instant",
+        messages: [
+          {
+            role: "system",
+            content: "You are a Copilot-style AI that outputs only code.",
+          },
+          { role: "user", content: prompt },
+        ],
+        temperature: 0.0,
+        stream: true,
+      }),
+    });
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      const chunk = decoder.decode(value);
+      res.write(chunk);
+    }
+
+    res.end();
+  } catch (err) {
+    console.error("Stream error:", err);
+    res.status(500).end("Stream failed");
+  }
+});
+
+// ======================================================
+// 🧠 MAIN AI ROUTE (COPILOT + CONTEXT SUPPORT)
+// ======================================================
 app.post("/ai", async (req, res) => {
   try {
-    const { mode, code, query } = req.body;
+    const { mode, code, query, context } = req.body;
 
     let prompt = "";
 
-    // --------------------
-    // CODE MODE (COPILOT STYLE)
-    // --------------------
+    // ---------------- CODE MODE ----------------
     if (mode === "code") {
       prompt = `
-Improve this code.
+Improve this code with MINIMAL changes.
 
 RULES:
-- Output ONLY one final improved code
-- NO explanation
-- NO markdown
-- NO alternatives
+- Only modify necessary parts
+- Keep structure same unless required
+- Output ONLY final code
+- No explanation
 
-Code:
+CODE:
 ${code}
 
-Task:
+TASK:
 ${query}
       `.trim();
     }
 
-    // --------------------
-    // DEBUG MODE
-    // --------------------
+    // ---------------- DEBUG MODE ----------------
     else if (mode === "debug") {
       prompt = `
-Fix this code.
+Fix this code with minimal changes.
 
 RULES:
-- Output ONLY corrected code
-- NO explanation
-- NO markdown
-- NO alternatives
+- Output ONLY fixed code
+- No explanation
+- No alternatives
 
-Code:
+CODE:
 ${code}
 
-Error:
+ERROR:
 ${query}
       `.trim();
     }
 
-    // --------------------
-    // CHAT MODE
-    // --------------------
+    // ---------------- CONTEXT MODE ----------------
+    else if (mode === "context") {
+      prompt = `
+You are working inside a full project.
+
+PROJECT CONTEXT:
+${JSON.stringify(context || {}, null, 2)}
+
+CURRENT FILE:
+${code}
+
+TASK:
+${query}
+
+Return ONLY updated code.
+      `.trim();
+    }
+
+    // ---------------- CHAT MODE ----------------
     else {
       prompt = query;
     }
@@ -147,9 +199,9 @@ ${query}
   }
 });
 
-// --------------------
-// START SERVER
-// --------------------
+// ======================================================
+// 🚀 START SERVER
+// ======================================================
 const PORT = process.env.PORT || 5000;
 
 app.listen(PORT, () => {
