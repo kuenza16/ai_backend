@@ -17,7 +17,7 @@ async function callAI(prompt) {
     const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
       headers: {
-        "Authorization": `Bearer ${process.env.GROQ_API_KEY}`,
+        Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
@@ -25,14 +25,15 @@ async function callAI(prompt) {
         messages: [
           {
             role: "system",
-            content: "You are a senior software engineer AI assistant. Help with coding, debugging, and optimization.",
+            content:
+              "You are a strict coding assistant. You output ONLY code. No explanations. No markdown. No comments unless required.",
           },
           {
             role: "user",
             content: prompt,
           },
         ],
-        temperature: 0.7,
+        temperature: 0.2,
         max_tokens: 600,
       }),
     });
@@ -44,7 +45,18 @@ async function callAI(prompt) {
       return data?.error?.message || "Groq API error";
     }
 
-    return data?.choices?.[0]?.message?.content || "No response";
+    let output = data?.choices?.[0]?.message?.content || "No response";
+
+    // --------------------
+    // CLEAN OUTPUT (IMPORTANT)
+    // removes markdown + code fences
+    // --------------------
+    output = output
+      .replace(/```[a-zA-Z]*\n?/g, "")
+      .replace(/```/g, "")
+      .trim();
+
+    return output;
   } catch (err) {
     console.error("callAI error:", err);
     return "AI request failed";
@@ -60,30 +72,52 @@ app.post("/ai", async (req, res) => {
 
     let prompt = "";
 
+    // --------------------
+    // CODE MODE (STRICT)
+    // --------------------
     if (mode === "code") {
       prompt = `
-Improve the following code:
-\`\`\`
+Improve this code.
+
+RULES:
+- Output ONLY final improved code
+- NO explanation
+- NO markdown
+- NO comments unless necessary
+
+Code:
 ${code}
-\`\`\`
 
-Task: ${query}
-
-Return clean optimized code with explanation.
-`;
-    } else if (mode === "debug") {
-      prompt = `
-Fix the following code:
-\`\`\`
-${code}
-\`\`\`
-
-Error / Issue:
+Task:
 ${query}
-
-Return fixed code with explanation.
 `;
-    } else {
+    }
+
+    // --------------------
+    // DEBUG MODE (STRICT)
+    // --------------------
+    else if (mode === "debug") {
+      prompt = `
+Fix this code.
+
+RULES:
+- Output ONLY corrected code
+- NO explanation
+- NO markdown
+- NO extra text
+
+Code:
+${code}
+
+Error:
+${query}
+`;
+    }
+
+    // --------------------
+    // CHAT MODE
+    // --------------------
+    else {
       prompt = query;
     }
 
