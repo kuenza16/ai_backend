@@ -3,6 +3,7 @@ import cors from "cors";
 import dotenv from "dotenv";
 import multer from "multer";
 import fs from "fs";
+import path from "path";
 
 dotenv.config();
 
@@ -20,8 +21,67 @@ const upload = multer({ dest: "uploads/" });
 // 🧠 SIMPLE PROJECT MEMORY (COPILOT STYLE)
 // ==========================
 const projectStore = {
-  files: {}, // filename -> content
+  files: {}, // filename -> { content, fullPath, ext, updatedAt }
 };
+
+// ==========================
+// 🧰 HELPERS
+// ==========================
+function safeDelete(filePath) {
+  try {
+    if (filePath && fs.existsSync(filePath)) {
+      fs.unlinkSync(filePath);
+    }
+  } catch (err) {
+    console.error("Failed to delete temp file:", err);
+  }
+}
+
+function normalizeFileName(name = "") {
+  return String(name).replace(/\\/g, "/").trim().toLowerCase();
+}
+
+function getExtension(fileName = "") {
+  return path.extname(fileName).replace(".", "").toLowerCase();
+}
+
+function detectMentionedFile(text = "") {
+  const matches = text.match(/([a-zA-Z0-9_\-./\\]+\.[a-zA-Z0-9]+)/g);
+  return matches ? matches[0] : null;
+}
+
+function findStoredFile(fileRef = "") {
+  const normalizedRef = normalizeFileName(fileRef);
+
+  const entries = Object.entries(projectStore.files);
+
+  for (const [storedName, meta] of entries) {
+    const storedNormalized = normalizeFileName(storedName);
+    const storedBase = normalizeFileName(path.basename(storedName));
+    const refBase = normalizeFileName(path.basename(normalizedRef));
+
+    if (
+      storedNormalized === normalizedRef ||
+      storedBase === normalizedRef ||
+      storedNormalized.endsWith(normalizedRef) ||
+      storedBase === refBase
+    ) {
+      return { name: storedName, meta };
+    }
+  }
+
+  return null;
+}
+
+function buildProjectContext(limit = 8, charsPerFile = 2000) {
+  return Object.entries(projectStore.files)
+    .slice(0, limit)
+    .map(([name, meta]) => ({
+      file: name,
+      ext: meta.ext,
+      content: meta.content.slice(0, charsPerFile),
+    }));
+}
 
 // ==========================
 // 🔥 GROQ CORE AI CALL
@@ -43,17 +103,18 @@ async function callAI(prompt) {
 You are a senior Copilot-level code engine.
 
 RULES:
-- Output ONLY code
-- No explanations
+- Output ONLY code unless explicitly asked for a short plain-text answer
+- No markdown
+- No code fences
 - Minimal changes only
-- Preserve structure
+- Preserve structure where possible
 - Follow project context strictly
             `.trim(),
           },
           { role: "user", content: prompt },
         ],
         temperature: 0.0,
-        max_tokens: 1200,
+        max_tokens: 1400,
       }),
     });
 
@@ -66,7 +127,6 @@ RULES:
 
     let output = data?.choices?.[0]?.message?.content || "No response";
 
-    // cleanup
     output = output
       .replace(/```[a-zA-Z]*\n?/g, "")
       .replace(/```/g, "")
@@ -83,36 +143,101 @@ RULES:
 // 📁 STORE FILE INTO PROJECT MEMORY
 // ==========================
 app.post("/project/file", upload.single("file"), (req, res) => {
+  let tempPath = null;
+
   try {
     const file = req.file;
+    tempPath = file?.path || null;
 
     if (!file) {
-      return res.status(400).json({ error: "No file uploaded" });
+      return res.status(400).json({
+        success: false,
+        error: "No file uploaded",
+      });
     }
 
     const content = fs.readFileSync(file.path, "utf-8");
+    const originalName = file.originalname;
 
-    projectStore.files[file.originalname] = content;
+    projectStore.files[originalName] = {
+      content,
+      fullPath: originalName,
+      ext: getExtension(originalName),
+      updatedAt: new Date().toISOString(),
+    };
 
-    fs.unlinkSync(file.path);
+    safeDelete(file.path);
 
     res.json({
       success: true,
       message: "File added to project context",
-      file: file.originalname,
+      file: originalName,
+      totalFiles: Object.keys(projectStore.files).length,
     });
   } catch (err) {
-    res.status(500).json({ error: "Failed to store file" });
+    safeDelete(tempPath);
+    console.error("Store file error:", err);
+    res.status(500).json({
+      success: false,
+      error: "Failed to store file",
+    });
   }
 });
 
 // ==========================
-// 📄 SINGLE FILE FIX (LIKE BEFORE)
+// 📁 LIST STORED PROJECT FILES
+// ==========================
+app.get("/project/files", (req, res) => {
+  try {
+    const files = Object.entries(projectStore.files).map(([name, meta]) => ({
+      file: name,
+      ext: meta.ext,
+      updatedAt: meta.updatedAt,
+    }));
+
+    res.json({
+      success: true,
+      files,
+      totalFiles: files.length,
+    });
+  } catch (err) {
+    console.error("List files error:", err);
+    res.status(500).json({
+      success: false,
+      error: "Failed to list files",
+    });
+  }
+});
+
+// ==========================
+// 🗑️ CLEAR PROJECT MEMORY
+// ==========================
+app.post("/project/clear", (req, res) => {
+  try {
+    projectStore.files = {};
+    res.json({
+      success: true,
+      message: "Project memory cleared",
+    });
+  } catch (err) {
+    console.error("Clear project error:", err);
+    res.status(500).json({
+      success: false,
+      error: "Failed to clear project memory",
+    });
+  }
+});
+
+// ==========================
+// 📄 SINGLE FILE FIX
 // ==========================
 app.post("/ai-file", upload.single("file"), async (req, res) => {
+  let tempPath = null;
+
   try {
     const { query } = req.body;
     const file = req.file;
+    tempPath = file?.path || null;
 
     if (!file) {
       return res.status(400).json({
@@ -126,6 +251,9 @@ app.post("/ai-file", upload.single("file"), async (req, res) => {
     const prompt = `
 Fix this code with minimal changes.
 
+FILE:
+${file.originalname}
+
 TASK:
 ${query || "Find and fix all issues"}
 
@@ -135,7 +263,7 @@ ${code}
 
     const response = await callAI(prompt);
 
-    fs.unlinkSync(file.path);
+    safeDelete(file.path);
 
     res.json({
       success: true,
@@ -143,6 +271,8 @@ ${code}
       response,
     });
   } catch (err) {
+    safeDelete(tempPath);
+    console.error("File processing error:", err);
     res.status(500).json({
       success: false,
       error: "File processing failed",
@@ -151,17 +281,114 @@ ${code}
 });
 
 // ==========================
-// ⚡ COPILOT-STYLE AUTOCOMPLETE (MAIN FEATURE)
+// 💬 CHAT / FILE MENTION EDITING
+// Supports messages like:
+// "fix authController.js"
+// "update extension.ts to use streaming"
+// ==========================
+app.post("/ai-chat", async (req, res) => {
+  try {
+    const { message, currentFile, currentCode } = req.body;
+
+    if (!message) {
+      return res.status(400).json({
+        success: false,
+        error: "Message is required",
+      });
+    }
+
+    const mentionedFile = detectMentionedFile(message);
+    const matched = mentionedFile ? findStoredFile(mentionedFile) : null;
+
+    const projectContext = buildProjectContext();
+
+    let prompt = "";
+
+    if (matched) {
+      prompt = `
+You are editing a requested project file.
+
+USER REQUEST:
+${message}
+
+TARGET FILE:
+${matched.name}
+
+TARGET FILE CODE:
+${matched.meta.content}
+
+CURRENT OPEN FILE:
+${currentFile || "unknown"}
+
+CURRENT OPEN FILE CODE:
+${currentCode || ""}
+
+PROJECT CONTEXT:
+${JSON.stringify(projectContext, null, 2)}
+
+TASK:
+Apply the user's request to the target file.
+
+RULES:
+- Return ONLY the final updated code for TARGET FILE
+- Keep unrelated code unchanged
+- Minimal safe edits only
+      `.trim();
+    } else {
+      prompt = `
+You are a Copilot-style chat assistant inside a code editor.
+
+USER REQUEST:
+${message}
+
+CURRENT OPEN FILE:
+${currentFile || "unknown"}
+
+CURRENT OPEN FILE CODE:
+${currentCode || ""}
+
+PROJECT CONTEXT:
+${JSON.stringify(projectContext, null, 2)}
+
+RULES:
+- If the request clearly asks for code, return only code
+- If it asks for explanation, answer briefly in plain text
+- If a file was requested but not found, say: File not found in project context
+      `.trim();
+    }
+
+    const response = await callAI(prompt);
+
+    res.json({
+      success: true,
+      targetFile: matched?.name || null,
+      mentionedFile: mentionedFile || null,
+      response,
+    });
+  } catch (err) {
+    console.error("AI chat error:", err);
+    res.status(500).json({
+      success: false,
+      error: "AI chat failed",
+    });
+  }
+});
+
+// ==========================
+// ⚡ COPILOT-STYLE AUTOCOMPLETE
 // ==========================
 app.post("/ai-complete", async (req, res) => {
   try {
-    const { file, cursor, action } = req.body;
+    const {
+      fileName,
+      language,
+      codeBeforeCursor,
+      codeAfterCursor,
+      cursor,
+      action,
+    } = req.body;
 
-    const projectContext = Object.entries(projectStore.files)
-      .map(([name, content]) => ({
-        file: name,
-        content: content.slice(0, 2000),
-      }));
+    const projectContext = buildProjectContext();
 
     const prompt = `
 You are GitHub Copilot inside a code editor.
@@ -170,18 +397,27 @@ PROJECT CONTEXT:
 ${JSON.stringify(projectContext, null, 2)}
 
 CURRENT FILE:
-${file}
+${fileName || "unknown"}
+
+LANGUAGE:
+${language || "unknown"}
+
+CODE BEFORE CURSOR:
+${codeBeforeCursor || ""}
+
+CODE AFTER CURSOR:
+${codeAfterCursor || ""}
 
 CURSOR POSITION:
-${cursor}
+${JSON.stringify(cursor || {}, null, 2)}
 
 TASK:
-${action}
+${action || "Continue the code from the cursor"}
 
 RULES:
-- Output ONLY code suggestion
+- Output ONLY the next best code suggestion
 - Must match project style
-- Use other files if needed
+- Use surrounding context if needed
 - Minimal change preferred
     `.trim();
 
@@ -192,6 +428,7 @@ RULES:
       suggestion: response,
     });
   } catch (err) {
+    console.error("Autocomplete error:", err);
     res.status(500).json({
       success: false,
       error: "Autocomplete failed",
@@ -206,7 +443,8 @@ app.post("/ai-stream", async (req, res) => {
   try {
     const { prompt } = req.body;
 
-    res.setHeader("Content-Type", "text/plain");
+    res.setHeader("Content-Type", "text/plain; charset=utf-8");
+    res.setHeader("Transfer-Encoding", "chunked");
 
     const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
@@ -232,18 +470,24 @@ No explanation.
       }),
     });
 
+    if (!response.ok || !response.body) {
+      const text = await response.text();
+      console.error("Streaming API error:", text);
+      return res.status(500).end("Stream failed");
+    }
+
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
 
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-
       res.write(decoder.decode(value));
     }
 
     res.end();
   } catch (err) {
+    console.error("Stream failed:", err);
     res.status(500).end("Stream failed");
   }
 });
@@ -253,18 +497,57 @@ No explanation.
 // ==========================
 app.post("/ai", async (req, res) => {
   try {
-    const { mode, code, query, context } = req.body;
+    const { mode, code, query, context, fileName, language } = req.body;
 
     let prompt = "";
 
     if (mode === "code") {
-      prompt = `Fix/improve code:\n${code}\nTask:${query}`;
+      prompt = `
+FILE:
+${fileName || "unknown"}
+
+LANGUAGE:
+${language || "unknown"}
+
+CODE:
+${code || ""}
+
+TASK:
+${query || "Improve or continue this code with minimal safe changes"}
+      `.trim();
     } else if (mode === "debug") {
-      prompt = `Debug:\n${code}\nError:${query}`;
+      prompt = `
+FILE:
+${fileName || "unknown"}
+
+LANGUAGE:
+${language || "unknown"}
+
+DEBUG THIS CODE:
+${code || ""}
+
+ERROR / TASK:
+${query || "Find and fix issues"}
+      `.trim();
     } else if (mode === "context") {
-      prompt = `Context:${JSON.stringify(context)}\nCode:${code}\nTask:${query}`;
+      prompt = `
+CONTEXT:
+${JSON.stringify(context || {}, null, 2)}
+
+FILE:
+${fileName || "unknown"}
+
+LANGUAGE:
+${language || "unknown"}
+
+CODE:
+${code || ""}
+
+TASK:
+${query || ""}
+      `.trim();
     } else {
-      prompt = query;
+      prompt = query || "";
     }
 
     const response = await callAI(prompt);
@@ -274,6 +557,7 @@ app.post("/ai", async (req, res) => {
       response,
     });
   } catch (err) {
+    console.error("AI route error:", err);
     res.status(500).json({
       success: false,
       error: "Server error",
