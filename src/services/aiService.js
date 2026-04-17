@@ -11,7 +11,7 @@ export async function callAI(prompt) {
         messages: [
           {
             role: "system",
-            ccontent: `
+            content: `
 You are a senior Copilot-level code engine.
 
 RULES:
