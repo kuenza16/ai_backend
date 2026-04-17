@@ -11,17 +11,18 @@ export async function callAI(prompt) {
         messages: [
           {
             role: "system",
-            content: `
+            ccontent: `
 You are a senior Copilot-level code engine.
 
 RULES:
-- Output ONLY code unless explicitly asked for a short plain-text answer
+- Output ONLY code or valid JSON when requested
 - No markdown
 - No code fences
 - Minimal changes only
 - Preserve structure where possible
 - Follow project context strictly
-            `.trim(),
+- If the user asks to create files/folders, return ONLY valid JSON actions
+`.trim(),
           },
           { role: "user", content: prompt },
         ],
