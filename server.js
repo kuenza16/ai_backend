@@ -1,17 +1,24 @@
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
+import multer from "multer";
+import fs from "fs";
 
 dotenv.config();
 
 const app = express();
 
 app.use(cors());
-app.use(express.json({ limit: "2mb" }));
+app.use(express.json({ limit: "10mb" }));
 
-// ======================================================
-// 🔥 GROQ CORE AI CALL (NON-STREAM)
-// ======================================================
+// ==========================
+// 📁 FILE UPLOAD CONFIG
+// ==========================
+const upload = multer({ dest: "uploads/" });
+
+// ==========================
+// 🔥 GROQ CORE AI CALL
+// ==========================
 async function callAI(prompt) {
   try {
     const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
@@ -26,21 +33,19 @@ async function callAI(prompt) {
           {
             role: "system",
             content: `
-You are a deterministic code engine (Copilot style).
+You are a senior debugging engine.
 
-STRICT RULES:
-- Output ONLY code
-- Do NOT explain anything
-- Do NOT include markdown
-- Do NOT include multiple solutions
-- Modify only what is necessary
-- Keep original structure unless required
+RULES:
+- Detect issues in code
+- Fix them with minimal changes
+- Output ONLY final corrected code
+- No explanation
             `.trim(),
           },
           { role: "user", content: prompt },
         ],
         temperature: 0.0,
-        max_tokens: 800,
+        max_tokens: 1200,
       }),
     });
 
@@ -53,7 +58,7 @@ STRICT RULES:
 
     let output = data?.choices?.[0]?.message?.content || "No response";
 
-    // Clean output (remove markdown fences if any)
+    // cleanup
     output = output
       .replace(/```[a-zA-Z]*\n?/g, "")
       .replace(/```/g, "")
@@ -66,15 +71,66 @@ STRICT RULES:
   }
 }
 
-// ======================================================
-// ⚡ STREAMING AI (REAL-TIME OUTPUT)
-// ======================================================
+// ==========================
+// 📄 FILE UPLOAD + DEBUG FIX
+// ==========================
+app.post("/ai-file", upload.single("file"), async (req, res) => {
+  try {
+    const { query } = req.body;
+    const file = req.file;
+
+    if (!file) {
+      return res.status(400).json({
+        success: false,
+        error: "No file uploaded",
+      });
+    }
+
+    // read file content
+    const code = fs.readFileSync(file.path, "utf-8");
+
+    const prompt = `
+You are a code debugging assistant.
+
+TASK:
+${query || "Find and fix all issues in this code"}
+
+CODE:
+${code}
+
+RULES:
+- Identify bugs, errors, bad practices
+- Fix with minimal changes
+- Output ONLY final working code
+    `.trim();
+
+    const response = await callAI(prompt);
+
+    // cleanup temp file
+    fs.unlinkSync(file.path);
+
+    res.json({
+      success: true,
+      filename: file.originalname,
+      response,
+    });
+  } catch (err) {
+    console.error("File route error:", err);
+    res.status(500).json({
+      success: false,
+      error: "File processing failed",
+    });
+  }
+});
+
+// ==========================
+// ⚡ STREAMING (unchanged)
+// ==========================
 app.post("/ai-stream", async (req, res) => {
   try {
     const { prompt } = req.body;
 
     res.setHeader("Content-Type", "text/plain");
-    res.setHeader("Transfer-Encoding", "chunked");
 
     const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
@@ -103,8 +159,7 @@ app.post("/ai-stream", async (req, res) => {
       const { done, value } = await reader.read();
       if (done) break;
 
-      const chunk = decoder.decode(value);
-      res.write(chunk);
+      res.write(decoder.decode(value));
     }
 
     res.end();
@@ -114,72 +169,22 @@ app.post("/ai-stream", async (req, res) => {
   }
 });
 
-// ======================================================
-// 🧠 MAIN AI ROUTE (COPILOT + CONTEXT SUPPORT)
-// ======================================================
+// ==========================
+// 🧠 NORMAL AI ROUTE
+// ==========================
 app.post("/ai", async (req, res) => {
   try {
     const { mode, code, query, context } = req.body;
 
     let prompt = "";
 
-    // ---------------- CODE MODE ----------------
     if (mode === "code") {
-      prompt = `
-Improve this code with MINIMAL changes.
-
-RULES:
-- Only modify necessary parts
-- Keep structure same unless required
-- Output ONLY final code
-- No explanation
-
-CODE:
-${code}
-
-TASK:
-${query}
-      `.trim();
-    }
-
-    // ---------------- DEBUG MODE ----------------
-    else if (mode === "debug") {
-      prompt = `
-Fix this code with minimal changes.
-
-RULES:
-- Output ONLY fixed code
-- No explanation
-- No alternatives
-
-CODE:
-${code}
-
-ERROR:
-${query}
-      `.trim();
-    }
-
-    // ---------------- CONTEXT MODE ----------------
-    else if (mode === "context") {
-      prompt = `
-You are working inside a full project.
-
-PROJECT CONTEXT:
-${JSON.stringify(context || {}, null, 2)}
-
-CURRENT FILE:
-${code}
-
-TASK:
-${query}
-
-Return ONLY updated code.
-      `.trim();
-    }
-
-    // ---------------- CHAT MODE ----------------
-    else {
+      prompt = `Fix/improve code:\n${code}\nTask:${query}`;
+    } else if (mode === "debug") {
+      prompt = `Debug this code:\n${code}\nError:${query}`;
+    } else if (mode === "context") {
+      prompt = `Context:${JSON.stringify(context)}\nCode:${code}\nTask:${query}`;
+    } else {
       prompt = query;
     }
 
@@ -189,9 +194,7 @@ Return ONLY updated code.
       success: true,
       response,
     });
-
   } catch (err) {
-    console.error("Route error:", err);
     res.status(500).json({
       success: false,
       error: "Server error",
@@ -199,9 +202,9 @@ Return ONLY updated code.
   }
 });
 
-// ======================================================
+// ==========================
 // 🚀 START SERVER
-// ======================================================
+// ==========================
 const PORT = process.env.PORT || 5000;
 
 app.listen(PORT, () => {
