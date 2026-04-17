@@ -25,15 +25,25 @@ async function callAI(prompt) {
         messages: [
           {
             role: "system",
-            content:
-              "You are a strict coding assistant. You output ONLY code. No explanations. No markdown. No comments unless required.",
+            content: `
+You are a deterministic code engine.
+
+STRICT RULES:
+- Output ONLY ONE final code solution
+- NO explanations
+- NO markdown
+- NO code fences
+- NO comments unless necessary
+- If multiple solutions exist, choose the best one only
+- Output MUST be raw code only
+            `.trim(),
           },
           {
             role: "user",
             content: prompt,
           },
         ],
-        temperature: 0.2,
+        temperature: 0.0,
         max_tokens: 600,
       }),
     });
@@ -48,12 +58,12 @@ async function callAI(prompt) {
     let output = data?.choices?.[0]?.message?.content || "No response";
 
     // --------------------
-    // CLEAN OUTPUT (IMPORTANT)
-    // removes markdown + code fences
+    // CLEAN OUTPUT (FORCED SINGLE CODE)
     // --------------------
     output = output
       .replace(/```[a-zA-Z]*\n?/g, "")
       .replace(/```/g, "")
+      .split("\n\n")[0] // forces single solution
       .trim();
 
     return output;
@@ -73,28 +83,28 @@ app.post("/ai", async (req, res) => {
     let prompt = "";
 
     // --------------------
-    // CODE MODE (STRICT)
+    // CODE MODE (COPILOT STYLE)
     // --------------------
     if (mode === "code") {
       prompt = `
 Improve this code.
 
 RULES:
-- Output ONLY final improved code
+- Output ONLY one final improved code
 - NO explanation
 - NO markdown
-- NO comments unless necessary
+- NO alternatives
 
 Code:
 ${code}
 
 Task:
 ${query}
-`;
+      `.trim();
     }
 
     // --------------------
-    // DEBUG MODE (STRICT)
+    // DEBUG MODE
     // --------------------
     else if (mode === "debug") {
       prompt = `
@@ -104,14 +114,14 @@ RULES:
 - Output ONLY corrected code
 - NO explanation
 - NO markdown
-- NO extra text
+- NO alternatives
 
 Code:
 ${code}
 
 Error:
 ${query}
-`;
+      `.trim();
     }
 
     // --------------------
