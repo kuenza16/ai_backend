@@ -17,6 +17,13 @@ app.use(express.json({ limit: "10mb" }));
 const upload = multer({ dest: "uploads/" });
 
 // ==========================
+// 🧠 SIMPLE PROJECT MEMORY (COPILOT STYLE)
+// ==========================
+const projectStore = {
+  files: {}, // filename -> content
+};
+
+// ==========================
 // 🔥 GROQ CORE AI CALL
 // ==========================
 async function callAI(prompt) {
@@ -33,13 +40,14 @@ async function callAI(prompt) {
           {
             role: "system",
             content: `
-You are a senior debugging engine.
+You are a senior Copilot-level code engine.
 
 RULES:
-- Detect issues in code
-- Fix them with minimal changes
-- Output ONLY final corrected code
-- No explanation
+- Output ONLY code
+- No explanations
+- Minimal changes only
+- Preserve structure
+- Follow project context strictly
             `.trim(),
           },
           { role: "user", content: prompt },
@@ -72,7 +80,34 @@ RULES:
 }
 
 // ==========================
-// 📄 FILE UPLOAD + DEBUG FIX
+// 📁 STORE FILE INTO PROJECT MEMORY
+// ==========================
+app.post("/project/file", upload.single("file"), (req, res) => {
+  try {
+    const file = req.file;
+
+    if (!file) {
+      return res.status(400).json({ error: "No file uploaded" });
+    }
+
+    const content = fs.readFileSync(file.path, "utf-8");
+
+    projectStore.files[file.originalname] = content;
+
+    fs.unlinkSync(file.path);
+
+    res.json({
+      success: true,
+      message: "File added to project context",
+      file: file.originalname,
+    });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to store file" });
+  }
+});
+
+// ==========================
+// 📄 SINGLE FILE FIX (LIKE BEFORE)
 // ==========================
 app.post("/ai-file", upload.single("file"), async (req, res) => {
   try {
@@ -86,27 +121,20 @@ app.post("/ai-file", upload.single("file"), async (req, res) => {
       });
     }
 
-    // read file content
     const code = fs.readFileSync(file.path, "utf-8");
 
     const prompt = `
-You are a code debugging assistant.
+Fix this code with minimal changes.
 
 TASK:
-${query || "Find and fix all issues in this code"}
+${query || "Find and fix all issues"}
 
 CODE:
 ${code}
-
-RULES:
-- Identify bugs, errors, bad practices
-- Fix with minimal changes
-- Output ONLY final working code
     `.trim();
 
     const response = await callAI(prompt);
 
-    // cleanup temp file
     fs.unlinkSync(file.path);
 
     res.json({
@@ -115,7 +143,6 @@ RULES:
       response,
     });
   } catch (err) {
-    console.error("File route error:", err);
     res.status(500).json({
       success: false,
       error: "File processing failed",
@@ -124,7 +151,56 @@ RULES:
 });
 
 // ==========================
-// ⚡ STREAMING (unchanged)
+// ⚡ COPILOT-STYLE AUTOCOMPLETE (MAIN FEATURE)
+// ==========================
+app.post("/ai-complete", async (req, res) => {
+  try {
+    const { file, cursor, action } = req.body;
+
+    const projectContext = Object.entries(projectStore.files)
+      .map(([name, content]) => ({
+        file: name,
+        content: content.slice(0, 2000),
+      }));
+
+    const prompt = `
+You are GitHub Copilot inside a code editor.
+
+PROJECT CONTEXT:
+${JSON.stringify(projectContext, null, 2)}
+
+CURRENT FILE:
+${file}
+
+CURSOR POSITION:
+${cursor}
+
+TASK:
+${action}
+
+RULES:
+- Output ONLY code suggestion
+- Must match project style
+- Use other files if needed
+- Minimal change preferred
+    `.trim();
+
+    const response = await callAI(prompt);
+
+    res.json({
+      success: true,
+      suggestion: response,
+    });
+  } catch (err) {
+    res.status(500).json({
+      success: false,
+      error: "Autocomplete failed",
+    });
+  }
+});
+
+// ==========================
+// ⚡ STREAMING (REALTIME COPILOT)
 // ==========================
 app.post("/ai-stream", async (req, res) => {
   try {
@@ -143,7 +219,11 @@ app.post("/ai-stream", async (req, res) => {
         messages: [
           {
             role: "system",
-            content: "You are a Copilot-style AI that outputs only code.",
+            content: `
+You are a real-time Copilot engine.
+Return only next code tokens.
+No explanation.
+            `.trim(),
           },
           { role: "user", content: prompt },
         ],
@@ -164,7 +244,6 @@ app.post("/ai-stream", async (req, res) => {
 
     res.end();
   } catch (err) {
-    console.error("Stream error:", err);
     res.status(500).end("Stream failed");
   }
 });
@@ -181,7 +260,7 @@ app.post("/ai", async (req, res) => {
     if (mode === "code") {
       prompt = `Fix/improve code:\n${code}\nTask:${query}`;
     } else if (mode === "debug") {
-      prompt = `Debug this code:\n${code}\nError:${query}`;
+      prompt = `Debug:\n${code}\nError:${query}`;
     } else if (mode === "context") {
       prompt = `Context:${JSON.stringify(context)}\nCode:${code}\nTask:${query}`;
     } else {
@@ -208,5 +287,5 @@ app.post("/ai", async (req, res) => {
 const PORT = process.env.PORT || 5000;
 
 app.listen(PORT, () => {
-  console.log(`⚡ AI Backend running on http://localhost:${PORT}`);
+  console.log(`⚡ Copilot AI Backend running on http://localhost:${PORT}`);
 });
